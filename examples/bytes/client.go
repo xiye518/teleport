@@ -6,7 +6,10 @@ import (
 	tp "github.com/henrylee2cn/teleport"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	go tp.GraceSignal()
 	tp.SetShutdown(time.Second*20, nil, nil)
 	var peer = tp.NewPeer(tp.PeerConfig{
@@ -20,35 +23,35 @@ func main() {
 	if rerr != nil {
 		tp.Fatalf("%v", rerr)
 	}
-	var reply []byte
+	var result []byte
 	for {
-		if rerr = sess.Pull(
+		if rerr = sess.Call(
 			"/group/home/test?peer_id=call-1",
-			[]byte("pull text"),
-			&reply,
+			[]byte("call text"),
+			&result,
 			tp.WithQuery("a", "1"),
 		).Rerror(); rerr != nil {
-			tp.Errorf("pull error: %v", rerr)
+			tp.Errorf("call error: %v", rerr)
 			time.Sleep(time.Second * 2)
 		} else {
 			break
 		}
 	}
-	tp.Infof("test reply: %s", reply)
+	tp.Infof("test result: %s", result)
 
-	rerr = sess.Pull(
+	rerr = sess.Call(
 		"/group/home/test_unknown?peer_id=call-2",
-		[]byte("unknown pull text"),
-		&reply,
+		[]byte("unknown call text"),
+		&result,
 		tp.WithQuery("b", "2"),
 	).Rerror()
 	if tp.IsConnRerror(rerr) {
 		tp.Fatalf("has conn rerror: %v", rerr)
 	}
 	if rerr != nil {
-		tp.Fatalf("pull error: %v", rerr)
+		tp.Fatalf("call error: %v", rerr)
 	}
-	tp.Infof("test_unknown: %s", reply)
+	tp.Infof("test_unknown: %s", result)
 }
 
 // Push controller
@@ -57,7 +60,7 @@ type Push struct {
 }
 
 // Test handler
-func (p *Push) Test(args *[]byte) *tp.Rerror {
-	tp.Infof("receive push(%s):\nargs: %s\nquery: %#v\n", p.Ip(), *args, p.Query())
+func (p *Push) Test(arg *[]byte) *tp.Rerror {
+	tp.Infof("receive push(%s):\narg: %s\nquery: %#v\n", p.Ip(), *arg, p.Query())
 	return nil
 }

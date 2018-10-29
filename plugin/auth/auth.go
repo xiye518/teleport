@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package plugin
+package auth
 
 import (
 	"fmt"
@@ -20,7 +20,6 @@ import (
 
 	"github.com/henrylee2cn/goutil"
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/socket"
 )
 
 // A auth plugin for verifying peer at the first time.
@@ -72,11 +71,11 @@ func (a *auth) PostDial(sess tp.PreSession) *tp.Rerror {
 	if a.generateAuthInfoFunc == nil {
 		return nil
 	}
-	rerr := sess.Send(authURI, a.generateAuthInfoFunc(), nil, tp.WithBodyCodec('s'), tp.WithPtype(tp.TypePull))
+	rerr := sess.Send(authURI, a.generateAuthInfoFunc(), nil, tp.WithBodyCodec('s'), tp.WithMtype(tp.TypeCall))
 	if rerr != nil {
 		return rerr
 	}
-	_, rerr = sess.Receive(func(header socket.Header) interface{} {
+	_, rerr = sess.Receive(func(header tp.Header) interface{} {
 		return nil
 	})
 	return rerr
@@ -86,8 +85,8 @@ func (a *auth) PostAccept(sess tp.PreSession) *tp.Rerror {
 	if a.verifyAuthInfoFunc == nil {
 		return nil
 	}
-	input, rerr := sess.Receive(func(header socket.Header) interface{} {
-		if header.Ptype() == tp.TypePull && header.Uri() == authURI {
+	input, rerr := sess.Receive(func(header tp.Header) interface{} {
+		if header.Mtype() == tp.TypeCall && header.Uri() == authURI {
 			return new(string)
 		}
 		return nil
@@ -96,14 +95,14 @@ func (a *auth) PostAccept(sess tp.PreSession) *tp.Rerror {
 		return rerr
 	}
 	authInfoPtr, ok := input.Body().(*string)
-	if !ok || input.Ptype() != tp.TypePull || input.Uri() != authURI {
+	if !ok || input.Mtype() != tp.TypeCall || input.Uri() != authURI {
 		rerr = tp.NewRerror(
 			tp.CodeUnauthorized,
 			tp.CodeText(tp.CodeUnauthorized),
-			fmt.Sprintf("the 1th package want: PULL %s, but have: %s %s", authURI, tp.TypeText(input.Ptype()), input.Uri()),
+			fmt.Sprintf("the 1th package want: CALL %s, but have: %s %s", authURI, tp.TypeText(input.Mtype()), input.Uri()),
 		)
 	} else {
 		rerr = a.verifyAuthInfoFunc(*authInfoPtr, sess)
 	}
-	return sess.Send(authURI, nil, rerr, tp.WithSeq(input.Seq()), tp.WithPtype(tp.TypeReply))
+	return sess.Send(authURI, nil, rerr, tp.WithSeq(input.Seq()), tp.WithMtype(tp.TypeReply))
 }

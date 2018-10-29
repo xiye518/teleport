@@ -2,11 +2,14 @@ package main
 
 import (
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/plugin"
+	"github.com/henrylee2cn/teleport/plugin/auth"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
-	cli := tp.NewPeer(tp.PeerConfig{}, plugin.LaunchAuth(generateAuthInfo))
+	defer tp.FlushLogger()
+	cli := tp.NewPeer(tp.PeerConfig{}, auth.LaunchAuth(generateAuthInfo))
 	defer cli.Close()
 	_, rerr := cli.Dial(":9090")
 	if rerr != nil {

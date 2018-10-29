@@ -5,10 +5,15 @@ import (
 	"time"
 
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/socket"
+	"github.com/henrylee2cn/teleport/xfer/gzip"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
+	gzip.Reg('g', "gizp", 5)
+
 	go tp.GraceSignal()
 	tp.SetShutdown(time.Second*20, nil, nil)
 	var peer = tp.NewPeer(tp.PeerConfig{
@@ -28,30 +33,32 @@ func main() {
 	}
 	sess.SetId("testId")
 
-	var reply interface{}
+	var result interface{}
 	for {
-		if rerr = sess.Pull(
+		if rerr = sess.Call(
 			"/group/home/test?peer_id=call-1",
 			map[string]interface{}{
 				"bytes": []byte("test bytes"),
 			},
-			&reply,
-			socket.WithXferPipe('g'),
-			socket.WithSetMeta("set", "0"),
-			socket.WithAddMeta("add", "1"),
-			socket.WithAddMeta("add", "2"),
+			&result,
+			tp.WithBodyCodec('j'),
+			tp.WithAcceptBodyCodec('j'),
+			tp.WithXferPipe('g'),
+			tp.WithSetMeta("set", "0"),
+			tp.WithAddMeta("add", "1"),
+			tp.WithAddMeta("add", "2"),
 		).Rerror(); rerr != nil {
-			tp.Errorf("pull error: %v", rerr)
+			tp.Errorf("call error: %v", rerr)
 			time.Sleep(time.Second * 2)
 		} else {
 			break
 		}
 	}
-	tp.Infof("test: %#v", reply)
+	tp.Infof("test: %#v", result)
 
 	// sess.Close()
 
-	rerr = sess.Pull(
+	rerr = sess.Call(
 		"/group/home/test_unknown?peer_id=call-2",
 		struct {
 			RawMessage json.RawMessage
@@ -60,16 +67,16 @@ func main() {
 			json.RawMessage(`{"RawMessage":"test_unknown"}`),
 			[]byte("test bytes"),
 		},
-		&reply,
-		socket.WithXferPipe('g'),
+		&result,
+		tp.WithXferPipe('g'),
 	).Rerror()
 	if tp.IsConnRerror(rerr) {
 		tp.Fatalf("has conn rerror: %v", rerr)
 	}
 	if rerr != nil {
-		tp.Fatalf("pull error: %v", rerr)
+		tp.Fatalf("call error: %v", rerr)
 	}
-	tp.Infof("test_unknown: %#v", reply)
+	tp.Infof("test_unknown: %#v", result)
 }
 
 // Push controller
@@ -78,7 +85,7 @@ type Push struct {
 }
 
 // Test handler
-func (p *Push) Test(args *map[string]interface{}) *tp.Rerror {
-	tp.Infof("receive push(%s):\nargs: %#v\nquery: %#v\n", p.Ip(), args, p.Query())
+func (p *Push) Test(arg *map[string]interface{}) *tp.Rerror {
+	tp.Infof("receive push(%s):\narg: %#v\nquery: %#v\n", p.Ip(), arg, p.Query())
 	return nil
 }

@@ -8,7 +8,10 @@ import (
 	"github.com/henrylee2cn/teleport/socket"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	tp.SetLoggerLevel("ERROR")
 
 	cli := tp.NewPeer(
@@ -21,21 +24,21 @@ func main() {
 		tp.Fatalf("%v", err)
 	}
 
-	var reply int
-	rerr := sess.Pull("/math/add",
+	var result int
+	rerr := sess.Call("/math/add",
 		[]int{1, 2, 3, 4, 5},
-		&reply,
+		&result,
 		tp.WithSeq(newRequestId()),
 	).Rerror()
 
 	if rerr != nil {
 		tp.Fatalf("%v", rerr)
 	}
-	tp.Printf("reply: %d", reply)
+	tp.Printf("result: %d", result)
 
 	rerr = sess.Push(
 		"/chat/say",
-		fmt.Sprintf("I get result %d", reply),
+		fmt.Sprintf("I get result %d", result),
 		socket.WithSetMeta("X-ID", "client-001"),
 		tp.WithSeq(newRequestId()),
 	)
@@ -45,5 +48,5 @@ func main() {
 }
 
 func newRequestId() string {
-	return "uid@" + goutil.URLRandomString(8)
+	return goutil.URLRandomString(8)
 }

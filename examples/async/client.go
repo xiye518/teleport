@@ -7,7 +7,10 @@ import (
 	tp "github.com/henrylee2cn/teleport"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	tp.SetLoggerLevel("INFO")
 	cli := tp.NewPeer(tp.PeerConfig{})
 	defer cli.Close()
@@ -16,19 +19,19 @@ func main() {
 		tp.Fatalf("%v", err)
 	}
 
-	// Single asynchronous pull
-	var reply string
-	pullCmd := sess.AsyncPull(
+	// Single asynchronous call
+	var result string
+	callCmd := sess.AsyncCall(
 		"/test/wait3s",
-		"Single asynchronous pull",
-		&reply,
-		make(chan tp.PullCmd, 1),
+		"Single asynchronous call",
+		&result,
+		make(chan tp.CallCmd, 1),
 	)
 WAIT:
 	for {
 		select {
-		case <-pullCmd.Done():
-			tp.Infof("test 1: reply: %#v, error: %v", reply, pullCmd.Rerror())
+		case <-callCmd.Done():
+			tp.Infof("test 1: result: %#v, error: %v", result, callCmd.Rerror())
 			break WAIT
 		default:
 			tp.Warnf("test 1: Not yet returned to the result, try again later...")
@@ -36,23 +39,23 @@ WAIT:
 		}
 	}
 
-	// Batch asynchronous pull
+	// Batch asynchronous call
 	batch := 10
-	pullCmdChan := make(chan tp.PullCmd, batch)
+	callCmdChan := make(chan tp.CallCmd, batch)
 	for i := 0; i < batch; i++ {
-		sess.AsyncPull(
+		sess.AsyncCall(
 			"/test/wait3s",
-			fmt.Sprintf("Batch asynchronous pull %d", i+1),
+			fmt.Sprintf("Batch asynchronous call %d", i+1),
 			new(string),
-			pullCmdChan,
+			callCmdChan,
 		)
 	}
-	for pullCmd := range pullCmdChan {
-		reply, rerr := pullCmd.Result()
+	for callCmd := range callCmdChan {
+		result, rerr := callCmd.Reply()
 		if rerr != nil {
 			tp.Errorf("test 2: error: %v", rerr)
 		} else {
-			tp.Infof("test 2: reply: %v", *reply.(*string))
+			tp.Infof("test 2: result: %v", *result.(*string))
 		}
 		batch--
 		if batch == 0 {

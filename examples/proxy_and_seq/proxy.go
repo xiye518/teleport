@@ -4,13 +4,16 @@ import (
 	"time"
 
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/plugin"
+	"github.com/henrylee2cn/teleport/plugin/proxy"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	srv := tp.NewPeer(
 		tp.PeerConfig{
-			ListenAddress: ":8080",
+			ListenPort: 8080,
 		},
 		newProxyPlugin(),
 	)
@@ -28,7 +31,7 @@ DIAL:
 		time.Sleep(time.Second * 3)
 		goto DIAL
 	}
-	return plugin.Proxy(func(*plugin.ProxyLabel) plugin.Caller {
+	return proxy.Proxy(func(*proxy.ProxyLabel) proxy.Forwarder {
 		return sess
 	})
 }

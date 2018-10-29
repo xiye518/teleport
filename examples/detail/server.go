@@ -4,10 +4,17 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/henrylee2cn/teleport/xfer/gzip"
+
 	tp "github.com/henrylee2cn/teleport"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
+	gzip.Reg('g', "gizp", 5)
+
 	go tp.GraceSignal()
 	// tp.SetReadLimit(10)
 	tp.SetShutdown(time.Second*20, nil, nil)
@@ -15,21 +22,22 @@ func main() {
 		SlowCometDuration: time.Millisecond * 500,
 		PrintDetail:       true,
 		CountTime:         true,
-		ListenAddress:     "0.0.0.0:9090",
+		ListenPort:        9090,
 	})
 	group := peer.SubRoute("group")
-	group.RoutePull(new(Home))
-	peer.SetUnknownPull(UnknownPullHandle)
+	group.RouteCall(new(Home))
+	peer.SetUnknownCall(UnknownCallHandle)
 	peer.ListenAndServe()
+	select {}
 }
 
 // Home controller
 type Home struct {
-	tp.PullCtx
+	tp.CallCtx
 }
 
 // Test handler
-func (h *Home) Test(args *map[string]interface{}) (map[string]interface{}, *tp.Rerror) {
+func (h *Home) Test(arg *map[string]interface{}) (map[string]interface{}, *tp.Rerror) {
 	h.Session().Push("/push/test?tag=from home-test", map[string]interface{}{
 		"your_id": h.Query().Get("peer_id"),
 	})
@@ -39,14 +47,14 @@ func (h *Home) Test(args *map[string]interface{}) (map[string]interface{}, *tp.R
 	})
 	time.Sleep(5e9)
 	return map[string]interface{}{
-		"your_args":   *args,
+		"your_arg":    *arg,
 		"server_time": time.Now(),
 		"meta":        meta.String(),
 	}, nil
 }
 
-// UnknownPullHandle handles unknown pull packet
-func UnknownPullHandle(ctx tp.UnknownPullCtx) (interface{}, *tp.Rerror) {
+// UnknownCallHandle handles unknown call message
+func UnknownCallHandle(ctx tp.UnknownCallCtx) (interface{}, *tp.Rerror) {
 	time.Sleep(1)
 	var v = struct {
 		RawMessage json.RawMessage
@@ -56,14 +64,14 @@ func UnknownPullHandle(ctx tp.UnknownPullCtx) (interface{}, *tp.Rerror) {
 	if err != nil {
 		return nil, tp.NewRerror(1001, "bind error", err.Error())
 	}
-	tp.Debugf("UnknownPullHandle: codec: %d, RawMessage: %s, bytes: %s",
+	tp.Debugf("UnknownCallHandle: codec: %d, RawMessage: %s, bytes: %s",
 		codecId, v.RawMessage, v.Bytes,
 	)
 	ctx.Session().Push("/push/test?tag=from home-test", map[string]interface{}{
 		"your_id": ctx.Query().Get("peer_id"),
 	})
 	return map[string]interface{}{
-		"your_args":   v,
+		"your_arg":    v,
 		"server_time": time.Now(),
 		"meta":        ctx.CopyMeta().String(),
 	}, nil

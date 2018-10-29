@@ -4,7 +4,10 @@ import (
 	tp "github.com/henrylee2cn/teleport"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	tp.SetLoggerLevel("ERROR")
 
 	cli := tp.NewPeer(tp.PeerConfig{})
@@ -18,37 +21,37 @@ func main() {
 		tp.Fatalf("%v", err)
 	}
 
-	var reply int
-	rerr := sess.Pull("/math/add1?push_status=yes",
+	var result int
+	rerr := sess.Call("/math/add1?push_status=yes",
 		[]int{1, 2, 3, 4, 5},
-		&reply,
+		&result,
 	).Rerror()
 
 	if rerr != nil {
 		tp.Fatalf("%v", rerr)
 	}
-	tp.Printf("reply1: %d", reply)
+	tp.Printf("result1: %d", result)
 
-	rerr = sess.Pull("/math/add2?push_status=yes",
+	rerr = sess.Call("/math/add2?push_status=yes",
 		[]int{1, 2, 3, 4, 5},
-		&reply,
+		&result,
 	).Rerror()
 
 	if rerr != nil {
 		tp.Fatalf("%v", rerr)
 	}
-	tp.Printf("reply2: %d", reply)
+	tp.Printf("result2: %d", result)
 }
 
 type ctrl struct {
 	tp.PushCtx
 }
 
-func (c *ctrl) ServerStatus1(args *string) *tp.Rerror {
-	return ServerStatus2(c, args)
+func (c *ctrl) ServerStatus1(arg *string) *tp.Rerror {
+	return ServerStatus2(c, arg)
 }
 
-func ServerStatus2(ctx tp.PushCtx, args *string) *tp.Rerror {
-	tp.Printf("server status(%s): %s", ctx.Uri(), *args)
+func ServerStatus2(ctx tp.PushCtx, arg *string) *tp.Rerror {
+	tp.Printf("server status(%s): %s", ctx.Uri(), *arg)
 	return nil
 }

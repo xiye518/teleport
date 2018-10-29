@@ -2,15 +2,17 @@ package main
 
 import (
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/socket"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	cli := tp.NewPeer(
 		tp.PeerConfig{
 			PrintDetail: false,
 		},
-		new(earlyPull),
+		new(earlyCall),
 	)
 	defer cli.Close()
 	_, err := cli.Dial(":9090")
@@ -19,13 +21,13 @@ func main() {
 	}
 }
 
-type earlyPull struct{}
+type earlyCall struct{}
 
-func (e *earlyPull) Name() string {
-	return "early_pull"
+func (e *earlyCall) Name() string {
+	return "early_call"
 }
 
-func (e *earlyPull) PostDial(sess tp.PreSession) *tp.Rerror {
+func (e *earlyCall) PostDial(sess tp.PreSession) *tp.Rerror {
 	rerr := sess.Send(
 		"/early/ping",
 		map[string]string{
@@ -37,7 +39,7 @@ func (e *earlyPull) PostDial(sess tp.PreSession) *tp.Rerror {
 		return rerr
 	}
 
-	input, rerr := sess.Receive(func(header socket.Header) interface{} {
+	input, rerr := sess.Receive(func(header Header) interface{} {
 		if header.Uri() == "/early/pong" {
 			return new(string)
 		}
@@ -47,6 +49,6 @@ func (e *earlyPull) PostDial(sess tp.PreSession) *tp.Rerror {
 	if rerr != nil {
 		return rerr
 	}
-	tp.Infof("reply: %v", input.String())
+	tp.Infof("result: %v", input.String())
 	return nil
 }

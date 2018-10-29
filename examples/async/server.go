@@ -6,20 +6,23 @@ import (
 	tp "github.com/henrylee2cn/teleport"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	srv := tp.NewPeer(tp.PeerConfig{
-		CountTime:     true,
-		ListenAddress: ":9090",
+		CountTime:  true,
+		ListenPort: 9090,
 	})
-	srv.RoutePull(new(test))
+	srv.RouteCall(new(test))
 	srv.ListenAndServe()
 }
 
 type test struct {
-	tp.PullCtx
+	tp.CallCtx
 }
 
-func (t *test) Wait3s(args *string) (string, *tp.Rerror) {
+func (t *test) Wait3s(arg *string) (string, *tp.Rerror) {
 	time.Sleep(3 * time.Second)
-	return *args + " -> OK", nil
+	return *arg + " -> OK", nil
 }

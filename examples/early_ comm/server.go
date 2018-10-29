@@ -2,29 +2,31 @@ package main
 
 import (
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/socket"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	srv := tp.NewPeer(
 		tp.PeerConfig{
-			PrintDetail:   false,
-			ListenAddress: ":9090",
+			PrintDetail: false,
+			ListenPort:  9090,
 		},
-		new(earlyReply),
+		new(earlyResult),
 	)
 	srv.ListenAndServe()
 }
 
-type earlyReply struct{}
+type earlyResult struct{}
 
-func (e *earlyReply) Name() string {
-	return "early_reply"
+func (e *earlyResult) Name() string {
+	return "early_result"
 }
 
-func (e *earlyReply) PostAccept(sess tp.PreSession) *tp.Rerror {
+func (e *earlyResult) PostAccept(sess tp.PreSession) *tp.Rerror {
 	var rigthUri bool
-	input, rerr := sess.Receive(func(header socket.Header) interface{} {
+	input, rerr := sess.Receive(func(header Header) interface{} {
 		if header.Uri() == "/early/ping" {
 			rigthUri = true
 			return new(map[string]string)
@@ -35,7 +37,7 @@ func (e *earlyReply) PostAccept(sess tp.PreSession) *tp.Rerror {
 		return rerr
 	}
 
-	var reply string
+	var result string
 	if !rigthUri {
 		rerr = tp.NewRerror(10005, "unexpected request", "")
 	} else {
@@ -44,12 +46,12 @@ func (e *earlyReply) PostAccept(sess tp.PreSession) *tp.Rerror {
 			rerr = tp.NewRerror(10005, "incorrect author", body["author"])
 		} else {
 			rerr = nil
-			reply = "OK"
+			result = "OK"
 		}
 	}
 	return sess.Send(
 		"/early/pong",
-		reply,
+		result,
 		rerr,
 	)
 }

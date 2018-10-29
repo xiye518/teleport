@@ -17,6 +17,7 @@
 package socket
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -69,12 +70,12 @@ type (
 		// some of the data was successfully written.
 		// A zero value for t means Write will not time out.
 		SetWriteDeadline(t time.Time) error
-		// WritePacket writes header and body to the connection.
+		// WriteMessage writes header and body to the connection.
 		// Note: must be safe for concurrent use by multiple goroutines.
-		WritePacket(packet *Packet) error
-		// ReadPacket reads header and body from the connection.
+		WriteMessage(message *Message) error
+		// ReadMessage reads header and body from the connection.
 		// Note: must be safe for concurrent use by multiple goroutines.
-		ReadPacket(packet *Packet) error
+		ReadMessage(message *Message) error
 		// Read reads data from the connection.
 		// Read can be made to time out and return an Error with Timeout() == true
 		// after a fixed time limit; see SetDeadline and SetReadDeadline.
@@ -97,15 +98,21 @@ type (
 		// Reset reset net.Conn and ProtoFunc.
 		Reset(netConn net.Conn, protoFunc ...ProtoFunc)
 	}
+	// RawConn raw conn
+	RawConn interface {
+		// Raw returns the raw net.Conn
+		Raw() net.Conn
+	}
 	socket struct {
 		net.Conn
-		protocol Proto
-		id       string
-		idMutex  sync.RWMutex
-		swap     goutil.Map
-		mu       sync.RWMutex
-		curState int32
-		fromPool bool
+		readerWithBuffer *bufio.Reader
+		protocol         Proto
+		id               string
+		idMutex          sync.RWMutex
+		swap             goutil.Map
+		mu               sync.RWMutex
+		curState         int32
+		fromPool         bool
 	}
 )
 
@@ -114,7 +121,10 @@ const (
 	activeClose int32 = 1
 )
 
-var _ net.Conn = Socket(nil)
+var (
+	_ net.Conn = Socket(nil)
+	_ RawConn  = (*socket)(nil)
+)
 
 // ErrProactivelyCloseSocket proactively close the socket error.
 var ErrProactivelyCloseSocket = errors.New("socket is closed proactively")
@@ -134,6 +144,8 @@ var socketPool = sync.Pool{
 	},
 }
 
+var readerSize = 1024
+
 // NewSocket wraps a net.Conn as a Socket.
 func NewSocket(c net.Conn, protoFunc ...ProtoFunc) Socket {
 	return newSocket(c, protoFunc)
@@ -141,11 +153,24 @@ func NewSocket(c net.Conn, protoFunc ...ProtoFunc) Socket {
 
 func newSocket(c net.Conn, protoFuncs []ProtoFunc) *socket {
 	var s = &socket{
-		protocol: getProto(protoFuncs, c),
-		Conn:     c,
+		Conn:             c,
+		readerWithBuffer: bufio.NewReaderSize(c, readerSize),
 	}
+	s.protocol = getProto(protoFuncs, s)
 	s.optimize()
 	return s
+}
+
+// Raw returns the raw net.Conn
+func (s *socket) Raw() net.Conn {
+	return s.Conn
+}
+
+// Read reads data from the connection.
+// Read can be made to time out and return an Error with Timeout() == true
+// after a fixed time limit; see SetDeadline and SetReadDeadline.
+func (s *socket) Read(b []byte) (int, error) {
+	return s.readerWithBuffer.Read(b)
 }
 
 // ControlFD invokes f on the underlying connection's file
@@ -164,32 +189,32 @@ func (s *socket) ControlFD(f func(fd uintptr)) error {
 	return ctrl.Control(f)
 }
 
-// WritePacket writes header and body to the connection.
-// WritePacket can be made to time out and return an Error with Timeout() == true
+// WriteMessage writes header and body to the connection.
+// WriteMessage can be made to time out and return an Error with Timeout() == true
 // after a fixed time limit; see SetDeadline and SetWriteDeadline.
 // Note:
 //  For the byte stream type of body, write directly, do not do any processing;
 //  Must be safe for concurrent use by multiple goroutines.
-func (s *socket) WritePacket(packet *Packet) error {
+func (s *socket) WriteMessage(message *Message) error {
 	s.mu.RLock()
 	protocol := s.protocol
 	s.mu.RUnlock()
-	err := protocol.Pack(packet)
+	err := protocol.Pack(message)
 	if err != nil && s.isActiveClosed() {
 		err = ErrProactivelyCloseSocket
 	}
 	return err
 }
 
-// ReadPacket reads header and body from the connection.
+// ReadMessage reads header and body from the connection.
 // Note:
 //  For the byte stream type of body, read directly, do not do any processing;
 //  Must be safe for concurrent use by multiple goroutines.
-func (s *socket) ReadPacket(packet *Packet) error {
+func (s *socket) ReadMessage(message *Message) error {
 	s.mu.RLock()
 	protocol := s.protocol
 	s.mu.RUnlock()
-	return protocol.Unpack(packet)
+	return protocol.Unpack(message)
 }
 
 // Swap returns custom data swap of the socket.
@@ -229,13 +254,12 @@ func (s *socket) SetId(id string) {
 // Reset reset net.Conn and ProtoFunc.
 func (s *socket) Reset(netConn net.Conn, protoFunc ...ProtoFunc) {
 	atomic.StoreInt32(&s.curState, activeClose)
-	if s.Conn != nil {
-		s.Conn.Close()
-	}
 	s.mu.Lock()
 	s.Conn = netConn
+	s.readerWithBuffer.Discard(s.readerWithBuffer.Buffered())
+	s.readerWithBuffer.Reset(netConn)
+	s.protocol = getProto(protoFunc, s)
 	s.SetId("")
-	s.protocol = getProto(protoFunc, netConn)
 	atomic.StoreInt32(&s.curState, normal)
 	s.optimize()
 	s.mu.Unlock()
@@ -314,7 +338,7 @@ type (
 	}
 	ifaceSetNoDelay interface {
 		// SetNoDelay controls whether the operating system should delay
-		// packet transmission in hopes of sending fewer packets (Nagle's
+		// message transmission in hopes of sending fewer messages (Nagle's
 		// algorithm).  The default is true (no delay), meaning that data is
 		// sent as soon as possible after a Write.
 		SetNoDelay(noDelay bool) error
@@ -386,7 +410,7 @@ func SetWriteBuffer(bytes int) {
 }
 
 // SetNoDelay controls whether the operating system should delay
-// packet transmission in hopes of sending fewer packets (Nagle's
+// message transmission in hopes of sending fewer messages (Nagle's
 // algorithm).  The default is true (no delay), meaning that data is
 // sent as soon as possible after a Write.
 func SetNoDelay(_noDelay bool) {

@@ -8,13 +8,18 @@ import (
 	"time"
 
 	tp "github.com/henrylee2cn/teleport"
+	"github.com/henrylee2cn/teleport/proto/pbproto"
 	"github.com/henrylee2cn/teleport/socket/example/pb"
 )
+
+//go:generate go build $GOFILE
 
 func main() {
 	// go func() {
 	// 	http.ListenAndServe("0.0.0.0:9092", nil)
 	// }()
+	defer tp.FlushLogger()
+	tp.SetDefaultProtoFunc(pbproto.NewPbProtoFunc)
 	tp.SetSocketNoDelay(false)
 	tp.SetLoggerLevel("WARNING")
 	go tp.GraceSignal()
@@ -46,14 +51,14 @@ func main() {
 		for i := 0; i < group; i++ {
 			go func() {
 				defer count.Done()
-				var reply = new(pb.PbTest)
-				if rerr := sess.Pull(
+				var result = new(pb.PbTest)
+				if rerr := sess.Call(
 					"/group/home/test",
 					&pb.PbTest{A: 10, B: 2},
-					reply,
+					result,
 				).Rerror(); rerr != nil {
 					atomic.AddUint32(&failNum, 1)
-					tp.Errorf("pull error: %v", rerr)
+					tp.Errorf("call error: %v", rerr)
 				}
 			}()
 		}

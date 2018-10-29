@@ -16,10 +16,13 @@ package tp
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"net"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/henrylee2cn/goutil"
 	"github.com/henrylee2cn/goutil/errors"
 	"github.com/henrylee2cn/goutil/graceful"
 	"github.com/henrylee2cn/goutil/graceful/inherit_net"
@@ -70,6 +73,8 @@ func shutdown() error {
 }
 
 func init() {
+	graceful.SetLog(logger)
+	initParentLaddrList()
 	SetShutdown(5*time.Second, nil, nil)
 }
 
@@ -101,6 +106,7 @@ func SetShutdown(timeout time.Duration, firstSweep, beforeExiting func() error) 
 		beforeExiting = func() error { return nil }
 	}
 	FirstSweep = func() error {
+		setParentLaddrList()
 		return errors.Merge(firstSweep(), inherit_net.SetInherited())
 	}
 	BeforeExiting = func() error {
@@ -123,6 +129,13 @@ func Reboot(timeout ...time.Duration) {
 
 // NewInheritListener creates a new listener that can be inherited on reboot.
 func NewInheritListener(network, laddr string, tlsConfig *tls.Config) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(laddr)
+	if err != nil {
+		return nil, err
+	}
+	if port == "0" {
+		laddr = popParentLaddr(network, host, laddr)
+	}
 	lis, err := inherit_net.Listen(network, laddr)
 	if err != nil {
 		return nil, err
@@ -134,4 +147,64 @@ func NewInheritListener(network, laddr string, tlsConfig *tls.Config) (net.Liste
 		lis = tls.NewListener(lis, tlsConfig)
 	}
 	return lis, nil
+}
+
+const parentLaddrsKey = "LISTEN_PARENT_ADDRS"
+
+var parentAddrList map[string]map[string][]string // network:host:[host:port]
+var parentAddrListMutex sync.Mutex
+
+func initParentLaddrList() {
+	parentLaddr := os.Getenv(parentLaddrsKey)
+	json.Unmarshal(goutil.StringToBytes(parentLaddr), &parentAddrList)
+}
+
+func setParentLaddrList() {
+	var parentAddrList = make(map[string]map[string][]string)
+	peers.rwmu.RLock()
+	for p := range peers.list {
+		for lis := range p.listeners {
+			addr := lis.Addr()
+			m, ok := parentAddrList[addr.Network()]
+			if !ok {
+				m = make(map[string][]string)
+				parentAddrList[addr.Network()] = m
+			}
+			host, _, _ := net.SplitHostPort(addr.String())
+			m[host] = append(m[host], addr.String())
+		}
+	}
+	peers.rwmu.RUnlock()
+	b, _ := json.Marshal(parentAddrList)
+	graceful.AddInherited(nil, []*graceful.Env{
+		{K: parentLaddrsKey, V: goutil.BytesToString(b)},
+	})
+}
+
+func popParentLaddr(network, host, laddr string) string {
+	parentAddrListMutex.Lock()
+	defer parentAddrListMutex.Unlock()
+	unifyLocalhost(&host)
+	m, ok := parentAddrList[network]
+	if !ok {
+		return laddr
+	}
+	h, ok := m[host]
+	if !ok {
+		return laddr
+	}
+	if len(h) == 0 {
+		return laddr
+	}
+	m[host] = h[1:]
+	return h[0]
+}
+
+func unifyLocalhost(host *string) {
+	switch *host {
+	case "localhost":
+		*host = "127.0.0.1"
+	case "0.0.0.0":
+		*host = "::"
+	}
 }

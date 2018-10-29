@@ -28,7 +28,6 @@ import (
 	"github.com/henrylee2cn/goutil/coarsetime"
 	"github.com/henrylee2cn/goutil/errors"
 	"github.com/henrylee2cn/teleport/codec"
-	"github.com/henrylee2cn/teleport/socket"
 )
 
 type (
@@ -54,20 +53,20 @@ type (
 	// EarlyPeer the communication peer that has just been created
 	EarlyPeer interface {
 		BasePeer
-		// Router returns the root router of pull or push handlers.
+		// Router returns the root router of call or push handlers.
 		Router() *Router
 		// SubRoute adds handler group.
 		SubRoute(pathPrefix string, plugin ...Plugin) *SubRouter
-		// RoutePull registers PULL handlers, and returns the paths.
-		RoutePull(ctrlStruct interface{}, plugin ...Plugin) []string
-		// RoutePullFunc registers PULL handler, and returns the path.
-		RoutePullFunc(pullHandleFunc interface{}, plugin ...Plugin) string
+		// RouteCall registers CALL handlers, and returns the paths.
+		RouteCall(ctrlStruct interface{}, plugin ...Plugin) []string
+		// RouteCallFunc registers CALL handler, and returns the path.
+		RouteCallFunc(callHandleFunc interface{}, plugin ...Plugin) string
 		// RoutePush registers PUSH handlers, and returns the paths.
 		RoutePush(ctrlStruct interface{}, plugin ...Plugin) []string
 		// RoutePushFunc registers PUSH handler, and returns the path.
 		RoutePushFunc(pushHandleFunc interface{}, plugin ...Plugin) string
-		// SetUnknownPull sets the default handler, which is called when no handler for PULL is found.
-		SetUnknownPull(fn func(UnknownPullCtx) (interface{}, *Rerror), plugin ...Plugin)
+		// SetUnknownCall sets the default handler, which is called when no handler for CALL is found.
+		SetUnknownCall(fn func(UnknownCallCtx) (interface{}, *Rerror), plugin ...Plugin)
 		// SetUnknownPush sets the default handler, which is called when no handler for PUSH is found.
 		SetUnknownPush(fn func(UnknownPushCtx) *Rerror, plugin ...Plugin)
 	}
@@ -75,17 +74,19 @@ type (
 	Peer interface {
 		EarlyPeer
 		// ListenAndServe turns on the listening service.
-		ListenAndServe(protoFunc ...socket.ProtoFunc) error
+		ListenAndServe(protoFunc ...ProtoFunc) error
 		// Dial connects with the peer of the destination address.
-		Dial(addr string, protoFunc ...socket.ProtoFunc) (Session, *Rerror)
+		Dial(addr string, protoFunc ...ProtoFunc) (Session, *Rerror)
 		// DialContext connects with the peer of the destination address, using the provided context.
-		DialContext(ctx context.Context, addr string, protoFunc ...socket.ProtoFunc) (Session, *Rerror)
+		DialContext(ctx context.Context, addr string, protoFunc ...ProtoFunc) (Session, *Rerror)
 		// ServeConn serves the connection and returns a session.
-		// Note: Not support automatically redials after disconnection.
-		ServeConn(conn net.Conn, protoFunc ...socket.ProtoFunc) (Session, error)
+		// Note:
+		//  Not support automatically redials after disconnection;
+		//  Execute the PostAcceptPlugin plugins.
+		ServeConn(conn net.Conn, protoFunc ...ProtoFunc) (Session, error)
 		// ServeListener serves the listener.
 		// Note: The caller ensures that the listener supports graceful shutdown.
-		ServeListener(lis net.Listener, protoFunc ...socket.ProtoFunc) error
+		ServeListener(lis net.Listener, protoFunc ...ProtoFunc) error
 	}
 )
 
@@ -96,14 +97,14 @@ var (
 )
 
 type peer struct {
-	router            *Router
-	pluginContainer   *PluginContainer
-	sessHub           *SessionHub
-	closeCh           chan struct{}
-	freeContext       *handlerCtx
-	ctxLock           sync.Mutex
+	router          *Router
+	pluginContainer *PluginContainer
+	sessHub         *SessionHub
+	closeCh         chan struct{}
+	// freeContext       *handlerCtx
+	// ctxLock           sync.Mutex
 	defaultSessionAge time.Duration // Default session max age, if less than or equal to 0, no time limit
-	defaultContextAge time.Duration // Default PULL or PUSH context max age, if less than or equal to 0, no time limit
+	defaultContextAge time.Duration // Default CALL or PUSH context max age, if less than or equal to 0, no time limit
 	tlsConfig         *tls.Config
 	slowCometDuration time.Duration
 	defaultBodyCodec  byte
@@ -118,9 +119,11 @@ type peer struct {
 	// only for client role
 	defaultDialTimeout time.Duration
 	redialTimes        int32
+	localAddr          net.Addr
 
 	// only for server role
 	listenAddr string
+	listeners  map[net.Listener]struct{}
 }
 
 // NewPeer creates a new peer.
@@ -132,6 +135,7 @@ func NewPeer(cfg PeerConfig, globalLeftPlugin ...Plugin) Peer {
 	if err := cfg.check(); err != nil {
 		Fatalf("%v", err)
 	}
+
 	var p = &peer{
 		router:             newRouter("/", pluginContainer),
 		pluginContainer:    pluginContainer,
@@ -142,11 +146,14 @@ func NewPeer(cfg PeerConfig, globalLeftPlugin ...Plugin) Peer {
 		slowCometDuration:  cfg.slowCometDuration,
 		defaultDialTimeout: cfg.DefaultDialTimeout,
 		network:            cfg.Network,
-		listenAddr:         cfg.ListenAddress,
+		listenAddr:         cfg.listenAddrStr,
+		localAddr:          cfg.localAddr,
 		printDetail:        cfg.PrintDetail,
 		countTime:          cfg.CountTime,
 		redialTimes:        cfg.RedialTimes,
+		listeners:          make(map[net.Listener]struct{}),
 	}
+
 	if c, err := codec.GetByName(cfg.DefaultBodyCodec); err != nil {
 		Fatalf("%v", err)
 	} else {
@@ -206,25 +213,38 @@ func (p *peer) CountSession() int {
 }
 
 // Dial connects with the peer of the destination address.
-func (p *peer) Dial(addr string, protoFunc ...socket.ProtoFunc) (Session, *Rerror) {
+func (p *peer) Dial(addr string, protoFunc ...ProtoFunc) (Session, *Rerror) {
 	return p.newSessionForClient(func() (net.Conn, error) {
-		return net.DialTimeout(p.network, addr, p.defaultDialTimeout)
+		d := net.Dialer{
+			LocalAddr: p.localAddr,
+			Timeout:   p.defaultDialTimeout,
+		}
+		return d.Dial(p.network, addr)
 	}, addr, protoFunc)
 }
 
 // DialContext connects with the peer of the destination address,
 // using the provided context.
-func (p *peer) DialContext(ctx context.Context, addr string, protoFunc ...socket.ProtoFunc) (Session, *Rerror) {
+func (p *peer) DialContext(ctx context.Context, addr string, protoFunc ...ProtoFunc) (Session, *Rerror) {
 	return p.newSessionForClient(func() (net.Conn, error) {
-		var d net.Dialer
+		d := net.Dialer{
+			LocalAddr: p.localAddr,
+		}
 		return d.DialContext(ctx, p.network, addr)
 	}, addr, protoFunc)
 }
 
-func (p *peer) newSessionForClient(dialFunc func() (net.Conn, error), addr string, protoFuncs []socket.ProtoFunc) (*session, *Rerror) {
-	var conn, dialErr = dialFunc()
+func (p *peer) newSessionForClient(dialFunc func() (net.Conn, error), addr string, protoFuncs []ProtoFunc) (*session, *Rerror) {
+	var conn net.Conn
+	var dialErr error
+	for i := p.redialTimes + 1; i > 0; i-- {
+		conn, dialErr = dialFunc()
+		if dialErr == nil {
+			break
+		}
+	}
 	if dialErr != nil {
-		rerr := rerrDialFailed.Copy().SetDetail(dialErr.Error())
+		rerr := rerrDialFailed.Copy().SetReason(dialErr.Error())
 		return nil, rerr
 	}
 	if p.tlsConfig != nil {
@@ -268,7 +288,7 @@ func (p *peer) newSessionForClient(dialFunc func() (net.Conn, error), addr strin
 	return sess, nil
 }
 
-func (p *peer) renewSessionForClient(sess *session, dialFunc func() (net.Conn, error), addr string, protoFuncs []socket.ProtoFunc) error {
+func (p *peer) renewSessionForClient(sess *session, dialFunc func() (net.Conn, error), addr string, protoFuncs []ProtoFunc) error {
 	var conn, dialErr = dialFunc()
 	if dialErr != nil {
 		return dialErr
@@ -278,6 +298,9 @@ func (p *peer) renewSessionForClient(sess *session, dialFunc func() (net.Conn, e
 	}
 	oldIp := sess.LocalAddr().String()
 	oldId := sess.Id()
+	if sess.conn != nil {
+		sess.conn.Close()
+	}
 	sess.conn = conn
 	sess.socket.Reset(conn, protoFuncs...)
 	if oldIp == oldId {
@@ -297,14 +320,20 @@ func (p *peer) renewSessionForClient(sess *session, dialFunc func() (net.Conn, e
 }
 
 // ServeConn serves the connection and returns a session.
-// Note: Not support automatically redials after disconnection.
-func (p *peer) ServeConn(conn net.Conn, protoFunc ...socket.ProtoFunc) (Session, error) {
+// Note:
+//  Not support automatically redials after disconnection;
+//  Execute the PostAcceptPlugin plugins.
+func (p *peer) ServeConn(conn net.Conn, protoFunc ...ProtoFunc) (Session, error) {
 	network := conn.LocalAddr().Network()
 	if strings.Contains(network, "udp") {
 		return nil, fmt.Errorf("invalid network: %s,\nrefer to the following: tcp, tcp4, tcp6, unix or unixpacket", network)
 	}
 	var sess = newSession(p, conn, protoFunc)
-	Tracef("serve ok (network:%s, addr:%s, id:%s)", network, sess.RemoteAddr().String(), sess.Id())
+	if rerr := p.pluginContainer.postAccept(sess); rerr != nil {
+		sess.Close()
+		return nil, rerr.ToError()
+	}
+	Infof("serve ok (network:%s, addr:%s, id:%s)", network, sess.RemoteAddr().String(), sess.Id())
 	p.sessHub.Set(sess)
 	AnywayGo(sess.startReadAndHandle)
 	return sess, nil
@@ -315,8 +344,9 @@ var ErrListenClosed = errors.New("listener is closed")
 
 // ServeListener serves the listener.
 // Note: The caller ensures that the listener supports graceful shutdown.
-func (p *peer) ServeListener(lis net.Listener, protoFunc ...socket.ProtoFunc) error {
+func (p *peer) ServeListener(lis net.Listener, protoFunc ...ProtoFunc) error {
 	defer lis.Close()
+	p.listeners[lis] = struct{}{}
 
 	network := lis.Addr().Network()
 	addr := lis.Addr().String()
@@ -372,7 +402,7 @@ func (p *peer) ServeListener(lis net.Listener, protoFunc ...socket.ProtoFunc) er
 				sess.Close()
 				return
 			}
-			Tracef("accept ok (network:%s, addr:%s, id:%s)", network, sess.RemoteAddr().String(), sess.Id())
+			Infof("accept ok (network:%s, addr:%s, id:%s)", network, sess.RemoteAddr().String(), sess.Id())
 			p.sessHub.Set(sess)
 			sess.startReadAndHandle()
 		})
@@ -380,7 +410,7 @@ func (p *peer) ServeListener(lis net.Listener, protoFunc ...socket.ProtoFunc) er
 }
 
 // ListenAndServe turns on the listening service.
-func (p *peer) ListenAndServe(protoFunc ...socket.ProtoFunc) error {
+func (p *peer) ListenAndServe(protoFunc ...ProtoFunc) error {
 	if len(p.listenAddr) == 0 {
 		Fatalf("listenAddress can not be empty")
 	}
@@ -399,6 +429,9 @@ func (p *peer) Close() (err error) {
 		}
 	}()
 	close(p.closeCh)
+	for lis := range p.listeners {
+		lis.Close()
+	}
 	deletePeer(p)
 	var (
 		count int
@@ -420,36 +453,32 @@ func (p *peer) Close() (err error) {
 	return err
 }
 
+var ctxPool = sync.Pool{
+	New: func() interface{} {
+		return newReadHandleCtx()
+	},
+}
+
 func (p *peer) getContext(s *session, withWg bool) *handlerCtx {
-	p.ctxLock.Lock()
 	if withWg {
 		// count get context
 		s.graceCtxWaitGroup.Add(1)
 	}
-	ctx := p.freeContext
-	if ctx == nil {
-		ctx = newReadHandleCtx()
-	} else {
-		p.freeContext = ctx.next
-	}
+	ctx := ctxPool.Get().(*handlerCtx)
+	ctx.clean()
 	ctx.reInit(s)
-	p.ctxLock.Unlock()
 	return ctx
 }
 
 func (p *peer) putContext(ctx *handlerCtx, withWg bool) {
-	p.ctxLock.Lock()
-	defer p.ctxLock.Unlock()
 	if withWg {
 		// count get context
 		ctx.sess.graceCtxWaitGroup.Done()
 	}
-	ctx.clean()
-	ctx.next = p.freeContext
-	p.freeContext = ctx
+	ctxPool.Put(ctx)
 }
 
-// Router returns the root router of pull or push handlers.
+// Router returns the root router of call or push handlers.
 func (p *peer) Router() *Router {
 	return p.router
 }
@@ -459,14 +488,14 @@ func (p *peer) SubRoute(pathPrefix string, plugin ...Plugin) *SubRouter {
 	return p.router.SubRoute(pathPrefix, plugin...)
 }
 
-// RoutePull registers PULL handlers, and returns the paths.
-func (p *peer) RoutePull(pullCtrlStruct interface{}, plugin ...Plugin) []string {
-	return p.router.RoutePull(pullCtrlStruct, plugin...)
+// RouteCall registers CALL handlers, and returns the paths.
+func (p *peer) RouteCall(callCtrlStruct interface{}, plugin ...Plugin) []string {
+	return p.router.RouteCall(callCtrlStruct, plugin...)
 }
 
-// RoutePullFunc registers PULL handler, and returns the path.
-func (p *peer) RoutePullFunc(pullHandleFunc interface{}, plugin ...Plugin) string {
-	return p.router.RoutePullFunc(pullHandleFunc, plugin...)
+// RouteCallFunc registers CALL handler, and returns the path.
+func (p *peer) RouteCallFunc(callHandleFunc interface{}, plugin ...Plugin) string {
+	return p.router.RouteCallFunc(callHandleFunc, plugin...)
 }
 
 // RoutePush registers PUSH handlers, and returns the paths.
@@ -479,10 +508,10 @@ func (p *peer) RoutePushFunc(pushHandleFunc interface{}, plugin ...Plugin) strin
 	return p.router.RoutePushFunc(pushHandleFunc, plugin...)
 }
 
-// SetUnknownPull sets the default handler,
-// which is called when no handler for PULL is found.
-func (p *peer) SetUnknownPull(fn func(UnknownPullCtx) (interface{}, *Rerror), plugin ...Plugin) {
-	p.router.SetUnknownPull(fn, plugin...)
+// SetUnknownCall sets the default handler,
+// which is called when no handler for CALL is found.
+func (p *peer) SetUnknownCall(fn func(UnknownCallCtx) (interface{}, *Rerror), plugin ...Plugin) {
+	p.router.SetUnknownCall(fn, plugin...)
 }
 
 // SetUnknownPush sets the default handler,
@@ -493,8 +522,8 @@ func (p *peer) SetUnknownPush(fn func(UnknownPushCtx) *Rerror, plugin ...Plugin)
 
 // maybe useful
 
-func (p *peer) getPullHandler(uriPath string) (*Handler, bool) {
-	return p.router.subRouter.getPull(uriPath)
+func (p *peer) getCallHandler(uriPath string) (*Handler, bool) {
+	return p.router.subRouter.getCall(uriPath)
 }
 
 func (p *peer) getPushHandler(uriPath string) (*Handler, bool) {

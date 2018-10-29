@@ -2,15 +2,18 @@ package main
 
 import (
 	tp "github.com/henrylee2cn/teleport"
-	"github.com/henrylee2cn/teleport/plugin"
+	"github.com/henrylee2cn/teleport/plugin/auth"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	srv := tp.NewPeer(
 		tp.PeerConfig{
-			ListenAddress: ":9090",
+			ListenPort: 9090,
 		},
-		plugin.VerifyAuth(verifyAuthInfo),
+		auth.VerifyAuth(verifyAuthInfo),
 	)
 	srv.ListenAndServe()
 }
@@ -22,7 +25,7 @@ const (
 	detailAuthFail = "auth fail detail"
 )
 
-func verifyAuthInfo(authInfo string, sess plugin.AuthSession) *tp.Rerror {
+func verifyAuthInfo(authInfo string, sess auth.AuthSession) *tp.Rerror {
 	tp.Infof("auth info: %v", authInfo)
 	if clientAuthInfo != authInfo {
 		return tp.NewRerror(codeAuthFail, textAuthFail, detailAuthFail)

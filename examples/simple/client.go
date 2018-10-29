@@ -1,37 +1,48 @@
 package main
 
 import (
+	"time"
+
 	tp "github.com/henrylee2cn/teleport"
 )
 
+//go:generate go build $GOFILE
+
 func main() {
+	defer tp.FlushLogger()
 	tp.SetLoggerLevel("ERROR")
+
 	cli := tp.NewPeer(tp.PeerConfig{})
 	defer cli.Close()
-	cli.RoutePush(new(push))
+
+	cli.RoutePush(new(Push))
+
 	sess, err := cli.Dial(":9090")
 	if err != nil {
 		tp.Fatalf("%v", err)
 	}
 
-	var reply int
-	rerr := sess.Pull("/math/add?push_status=yes",
+	var result int
+	rerr := sess.Call("/math/add?author=henrylee2cn",
 		[]int{1, 2, 3, 4, 5},
-		&reply,
-		// tp.WithAcceptBodyCodec('s'),
+		&result,
 	).Rerror()
-
 	if rerr != nil {
 		tp.Fatalf("%v", rerr)
 	}
-	tp.Printf("reply: %d", reply)
+	tp.Printf("result: %d", result)
+
+	tp.Printf("wait for 10s...")
+	time.Sleep(time.Second * 10)
 }
 
-type push struct {
+// Push push handler
+type Push struct {
 	tp.PushCtx
 }
 
-func (p *push) Status(args *string) *tp.Rerror {
-	tp.Printf("server status: %s", *args)
+// Push handles '/push/status' message
+func (p *Push) Status(arg *string) *tp.Rerror {
+	tp.Printf("%s", *arg)
 	return nil
 }
